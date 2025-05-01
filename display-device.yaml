@@ -1,0 +1,181 @@
+esphome:
+  # --- Updated Names ---
+  name: device-display
+  friendly_name: "Home Log Display"
+  # --- End Updated Names ---
+  # Optional: Add platformio_options if the psram block alone doesn't work
+  # platformio_options:
+  #   build_flags: "-DBOARD_HAS_PSRAM"
+
+esp32:
+  board: esp-wrover-kit # This board profile works well for the WT32-SC01
+  framework:
+    type: arduino
+
+# Correct placement for PSRAM configuration
+psram:
+  mode: quad # Use quad PSRAM mode for standard ESP32 WROVER
+  speed: 80MHz
+
+# --- Globals Expanded to 8 Log Lines ---
+globals:
+  - id: log_line_1
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: log_line_2
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: log_line_3
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: log_line_4 # Added
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: log_line_5 # Added
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: log_line_6 # Added
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: log_line_7 # Added
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: log_line_8 # Added
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+# --- End Globals ---
+
+ota:
+  # Specify the platform for OTA updates
+  platform: esphome
+  # Your OTA password - KEEP THIS SECRET and change it!
+  password: "changeme"
+
+wifi:
+  ssid: !secret wifi_ssid # Define in secrets.yaml
+  password: !secret wifi_password # Define in secrets.yaml
+  # Optional: Improve connection stability
+  power_save_mode: none
+
+# Optional: Enable captive portal if WiFi setup fails
+# captive_portal:
+
+web_server:
+  port: 80
+
+logger:
+  level: DEBUG
+  # Baud rate 0 disables logging via UART, useful if pins conflict
+  # baud_rate: 0
+  baud_rate: 115200
+
+api:
+  # Your API encryption key - KEEP THIS SECRET and change it!
+  encryption:
+    key: "changeme"
+  # --- Custom Service ---
+  services:
+    - service: add_log_message # Name of the service to call from HA
+      variables:
+        new_message: string # Variable type expected from HA
+      then:
+        # --- Lambda to format timestamp ---
+        - lambda: |-
+            auto now = id(homeassistant_time).now();
+            char timestamp_buffer[9]; // hh:mm AM/PM
+            now.strftime(timestamp_buffer, sizeof(timestamp_buffer), "%I:%M %p");
+            std::string full_message = "[" + std::string(timestamp_buffer) + "]: \"" + new_message + "\"";
+            id(log_line_8) = id(log_line_7); id(log_line_7) = id(log_line_6); id(log_line_6) = id(log_line_5); id(log_line_5) = id(log_line_4); id(log_line_4) = id(log_line_3); id(log_line_3) = id(log_line_2); id(log_line_2) = id(log_line_1);
+            id(log_line_1) = full_message;
+        # Request the display to update itself
+        - component.update: main_display
+  # --- End Custom Service ---
+
+# Add Time component using Home Assistant as the source
+time:
+  - platform: homeassistant
+    id: homeassistant_time # ID to reference the time
+
+# SPI Bus configuration
+spi:
+  clk_pin: GPIO14
+  mosi_pin: GPIO13
+  miso_pin: GPIO12
+
+# --- I2C and Touchscreen REMOVED ---
+
+# Backlight Control Output
+output:
+  - platform: ledc
+    pin: GPIO23
+    id: backlight_pwm
+
+# Light component to control backlight brightness
+light:
+  - platform: monochromatic
+    output: backlight_pwm
+    name: "Display Backlight"
+    id: display_backlight
+    restore_mode: ALWAYS_ON
+
+# --- Added Color Definitions ---
+color:
+  - id: my_white
+    red: 100%
+    green: 100%
+    blue: 100%
+  - id: my_yellow
+    red: 100%
+    green: 100%
+    blue: 0%
+  - id: my_black
+    red: 0%
+    green: 0%
+    blue: 0%
+# --- End Color Definitions ---
+
+# Font for displaying text
+font:
+  - file: "gfonts://Roboto" # Consider "Roboto Mono" for fixed width
+    id: my_font
+    size: 18 # Adjusted font size
+
+# Display Configuration
+display:
+  - platform: ili9xxx
+    id: main_display # ID to allow component.update
+    invert_colors: false
+    model: ST7796
+    spi_id:
+    cs_pin: GPIO15
+    dc_pin: GPIO21
+    reset_pin: GPIO22
+    rotation: 90 # Landscape rotation
+    update_interval: 1s # Keep updating clock
+    lambda: |-
+      // Display Clock Line at the top (remains centered)
+      it.strftime(it.get_width() / 2, 5, id(my_font), id(my_white), TextAlign::TOP_CENTER, "Home Log: %I:%M %p", id(homeassistant_time).now());
+
+      // Display Log Lines (left-aligned)
+      int y_offset = 30; int line_height = 20; int timestamp_len = 13; int left_margin = 5;
+      auto draw_log_line = [&](int y, std::string full_line) {
+        if (full_line.empty() || full_line.length() <= timestamp_len) return;
+        std::string ts_part = full_line.substr(0, timestamp_len);
+        std::string msg_part = full_line.substr(timestamp_len);
+        int ts_x1, ts_y1, ts_width, ts_height;
+        it.get_text_bounds(0, 0, ts_part.c_str(), id(my_font), TextAlign::TOP_LEFT, &ts_x1, &ts_y1, &ts_width, &ts_height);
+        int start_x = left_margin; int msg_x = start_x + ts_width;
+        it.print(start_x, y, id(my_font), id(my_yellow), TextAlign::TOP_LEFT, ts_part.c_str());
+        it.print(msg_x, y, id(my_font), id(my_white), TextAlign::TOP_LEFT, msg_part.c_str());
+      };
+      draw_log_line(y_offset + (line_height * 0), id(log_line_1)); draw_log_line(y_offset + (line_height * 1), id(log_line_2)); draw_log_line(y_offset + (line_height * 2), id(log_line_3)); draw_log_line(y_offset + (line_height * 3), id(log_line_4)); draw_log_line(y_offset + (line_height * 4), id(log_line_5)); draw_log_line(y_offset + (line_height * 5), id(log_line_6)); draw_log_line(y_offset + (line_height * 6), id(log_line_7)); draw_log_line(y_offset + (line_height * 7), id(log_line_8));
+
+      // Buttons are NOT drawn as touch is removed
